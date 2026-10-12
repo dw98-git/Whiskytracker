@@ -46,6 +46,7 @@ Whisky Vault beantwortet das in Sekunden. Flasche scannen oder Namen eintippen, 
 
 ### Kaufliste und Preise
 - Eigene **Wunschliste** mit Zielpreis, zuletzt gesehenem Preis und Priorität. Die App zeigt an, wenn der Zielpreis erreicht ist, und übernimmt den Wunsch mit einem Tipp in die Sammlung.
+- **Wunschliste für Freunde** (freiwillig): Freunde sehen deine Wünsche mit Name, Bild und Priorität, praktisch für Geschenke. Zielpreis, Preise und Notizen bleiben privat.
 - Flaschen von Freunden lassen sich mit einem Tipp in die eigene Sammlung oder auf die Wunschliste übernehmen.
 - Whiskys, bei denen du am Degustationsabend «Ja» oder «Vielleicht» wählst, landen automatisch auf der Kaufliste, sortiert nach deiner Note.
 - **Preisvergleich** mit einem Tipp: Google Shopping, toppreise.ch, idealo.de und Whiskybase, mit Marke und Name schon eingesetzt.

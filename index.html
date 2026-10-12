@@ -303,12 +303,14 @@ let raf;const sched=()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(ren
 /* ============ Datenzugriff (Firestore) ============ */
 function isOpen(b){return b.opened??((b.fill??100)<100)}
 const PUB=b=>({id:b.id,name:b.name,distillery:b.distillery||'',age:b.age??null,abv:b.abv??null,volume:b.volume??null,barcode:b.barcode||'',image:b.image||'',fill:b.fill??100,rating:b.rating??null,notes:b.notes||'',region:b.region||'',cask:b.cask||'',bottler:b.bottler||'',opened:isOpen(b),added:b.added||Date.now()}); // ohne Preise!
+const PUBW=w=>({id:w.id,name:w.name,distillery:w.distillery||'',barcode:w.barcode||'',image:w.image||'',prio:w.prio||'normal',added:w.added||Date.now()}); // ohne Zielpreis, Preis und Notiz
 function upsert(kind,o){const a=D[kind],i=a.findIndex(x=>x.id===o.id);if(i>=0)a[i]=o;else a.push(o)}
 function put(kind,o){
   const isNewB=kind==='bottles'&&!D.bottles.some(x=>x.id===o.id);
   upsert(kind,o);const u=ME.uid;
   setDoc(doc(db,'users',u,kind,o.id),o).catch(fail);
   if(kind==='bottles')setDoc(doc(db,'profiles',u,'shared',o.id),PUB(o)).catch(fail);
+  if(kind==='wishlist'&&PROFILE?.wishShare===true)setDoc(doc(db,'profiles',u,'wish',o.id),PUBW(o)).catch(fail);
   if(kind==='bottles'||kind==='wishlist')contribute(o);
   if(kind==='tastings'&&o.whisky?.barcode)contribute(o.whisky);
   if(isNewB&&PROFILE?.share!==false)setDoc(doc(db,'profiles',u,'activity',uid()),{type:'bottle',name:o.name,ts:Date.now()}).catch(()=>{});
@@ -324,6 +326,7 @@ function del(kind,id){
   }
   deleteDoc(doc(db,'users',u,kind,id)).catch(fail);
   if(kind==='bottles')deleteDoc(doc(db,'profiles',u,'shared',id)).catch(fail);
+  if(kind==='wishlist'&&PROFILE?.wishShare===true)deleteDoc(doc(db,'profiles',u,'wish',id)).catch(fail);
   sched();
 }
 function saveSettings(){setDoc(doc(db,'users',ME.uid),{settings:D.settings},{merge:true}).catch(fail)}
@@ -333,13 +336,14 @@ async function bulkSet({bottles=[],sessions=[],tastings=[],wishlist=[]}){
   bottles.forEach(b=>{b.id=b.id||uid();ops.push(['set',doc(db,'users',u,'bottles',b.id),b],['set',doc(db,'profiles',u,'shared',b.id),PUB(b)])});
   sessions.forEach(s=>{s.id=s.id||uid();ops.push(['set',doc(db,'users',u,'sessions',s.id),s])});
   tastings.forEach(t=>{t.id=t.id||uid();ops.push(['set',doc(db,'users',u,'tastings',t.id),t])});
-  wishlist.forEach(w=>{w.id=w.id||uid();ops.push(['set',doc(db,'users',u,'wishlist',w.id),w])});
+  wishlist.forEach(w=>{w.id=w.id||uid();ops.push(['set',doc(db,'users',u,'wishlist',w.id),w]);if(PROFILE?.wishShare===true)ops.push(['set',doc(db,'profiles',u,'wish',w.id),PUBW(w)])});
   await commitOps(ops);
 }
 async function wipeAll(){
   const u=ME.uid,ops=[];
   for(const k of['bottles','sessions','tastings','wishlist'])(await getDocs(collection(db,'users',u,k))).forEach(d=>ops.push(['del',d.ref]));
   (await getDocs(collection(db,'profiles',u,'shared'))).forEach(d=>ops.push(['del',d.ref]));
+  (await getDocs(collection(db,'profiles',u,'wish')).catch(()=>({forEach(){}}))).forEach(d=>ops.push(['del',d.ref]));
   await commitOps(ops);
 }
 function genCode(){const A='ABCDEFGHJKMNPQRSTUVWXYZ23456789';let c='';const r=crypto.getRandomValues(new Uint8Array(8));for(const x of r)c+=A[x%A.length];return c}
@@ -1014,8 +1018,11 @@ function openBottle(id,pre,opts){
 }
 
 /* ============ Version und Änderungsprotokoll ============ */
-const APP_VERSION='1.11.1';
+const APP_VERSION='1.12.0';
 const CHANGELOG=[
+  {v:'1.12.0',d:'2026-10-12',t:[
+    'Neu: Wunschliste für Freunde. Wer will, gibt die eigene Wunschliste frei (Freunde → Dein Profil). Freunde sehen sie unter ihrem Namen auf dem neuen Reiter «Wunschliste», praktisch für Geschenke. Zielpreis, Preise und Notizen bleiben privat.',
+  ]},
   {v:'1.11.1',d:'2026-10-11',t:[
     'Freunde: lange Namen werden jetzt vollständig angezeigt.',
     'Die Sammlung eines Freundes lässt sich wie deine eigene als Karten oder Liste ansehen. Die Wahl gilt für beide.',
@@ -1574,7 +1581,9 @@ function rFriends(v){
     <div><label>Anzeigename</label><div class="row"><input id="pname" value="${esc(PROFILE.name)}" maxlength="40"><button class="btn" id="psave">Speichern</button></div></div>
     <div><label>Dein Freundescode</label><div class="row"><span class="code">${fmtCode(PROFILE.code)}</span><button class="btn" id="pcopy">Kopieren</button></div><p class="sm muted" style="margin:6px 0 0">Gib den Code Freunden weiter. Wer ihn kennt, kann dir eine Anfrage schicken – sehen kann er deine Sammlung erst, wenn du annimmst.</p></div>
     <label class="chk"><input type="checkbox" id="pshare" ${PROFILE.share?'checked':''}> Freunde dürfen meine Sammlung sehen</label>
-    <p class="sm muted" style="margin:0">Freunde sehen Name, Bild, Füllstand, Note und Notizen. Einstands- und Marktpreise sowie Degustationen bleiben privat.</p></div>
+    <p class="sm muted" style="margin:0">Freunde sehen Name, Bild, Füllstand, Note und Notizen. Einstands- und Marktpreise sowie Degustationen bleiben privat.</p>
+    <label class="chk"><input type="checkbox" id="pwish" ${PROFILE.wishShare?'checked':''}> Freunde dürfen meine Wunschliste sehen</label>
+    <p class="sm muted" style="margin:0">Praktisch für Geschenke. Freunde sehen Name, Bild und Priorität deiner Wünsche. Zielpreis, gesehener Preis und Notiz bleiben privat.</p></div>
   <div class="box"><label style="margin:0">Freund hinzufügen</label><div class="row"><input id="fcode" placeholder="Freundescode, z. B. K7QF-2MXP" autocapitalize="characters" autocomplete="off"><button class="btn pri" id="fadd">Anfrage senden</button></div><div class="sm" id="fmsg"></div></div>
   ${FR.incoming.length?`<div class="box"><label style="margin:0">Anfragen an dich</label>${FR.incoming.map(r=>`<div class="row sb"><div class="row"><span class="avatar">${esc(initial(r.fromName))}</span><b>${esc(r.fromName||'Unbekannt')}</b></div><div class="row"><button class="btn pri" data-acc="${r.id}">Annehmen</button><button class="btn ghost" data-dec="${r.id}">Ablehnen</button></div></div>`).join('')}</div>`:''}
   ${FR.outgoing.length?`<div class="box"><label style="margin:0">Gesendete Anfragen</label>${FR.outgoing.map(r=>`<div class="row sb"><div class="row"><span class="avatar">${esc(initial(r.toName))}</span><span>${esc(r.toName||'Unbekannt')} <span class="muted sm">wartet auf Antwort</span></span></div><button class="btn ghost" data-dec="${r.id}">Zurückziehen</button></div>`).join('')}</div>`:''}
@@ -1582,6 +1591,16 @@ function rFriends(v){
     ${FR.friends.length?FR.friends.map(f=>`<div class="item static fr"><span class="avatar">${esc(initial(FR.profiles[f.id]?.name))}</span><div class="mid"><b>${name(f.id)}</b></div><div class="fbtns"><button class="btn" data-view="${f.id}">Sammlung ansehen</button><button class="btn ghost danger" data-rm="${f.pid}" title="Freund entfernen" aria-label="Freund entfernen">✕</button></div></div>`).join(''):'<p class="muted sm" style="margin:0">Noch keine Freunde. Tausche Codes aus und teile eure Sammlungen.</p>'}</div></div>`;
   $('#psave').onclick=()=>{const n=$('#pname').value.trim();if(!n)return;setDoc(doc(db,'profiles',ME.uid),{name:n},{merge:true}).then(()=>toast('Name gespeichert')).catch(fail)};
   $('#pcopy').onclick=async()=>{try{await navigator.clipboard.writeText(PROFILE.code);toast('Code kopiert')}catch{toast('Code: '+fmtCode(PROFILE.code))}};
+  $('#pwish').onchange=async e=>{
+    const on=e.target.checked;
+    try{
+      await setDoc(doc(db,'profiles',ME.uid),{wishShare:on},{merge:true});
+      const ops=[];
+      if(on)D.wishlist.forEach(w=>ops.push(['set',doc(db,'profiles',ME.uid,'wish',w.id),PUBW(w)]));
+      else(await getDocs(collection(db,'profiles',ME.uid,'wish'))).forEach(d=>ops.push(['del',d.ref]));
+      await commitOps(ops);toast(on?'Wunschliste für Freunde sichtbar':'Wunschliste wieder privat');
+    }catch(err){e.target.checked=!on;fail(err)}
+  };
   $('#pshare').onchange=e=>setDoc(doc(db,'profiles',ME.uid),{share:e.target.checked},{merge:true}).catch(fail);
   $('#fadd').onclick=()=>sendRequest($('#fcode').value);
   $('#fcode').onkeydown=e=>{if(e.key==='Enter')sendRequest(e.target.value)};
@@ -1612,7 +1631,8 @@ async function acceptReq(r){
   try{await setDoc(doc(db,'friends',members.join('_')),{members,by:ME.uid,created:Date.now()});await deleteDoc(doc(db,'requests',r.id));toast('Ihr seid jetzt befreundet')}catch(e){fail(e)}
 }
 async function openFriend(fid){
-  UI.friend={id:fid,loading:true,items:[],q:'',onlyNew:false};render();
+  const F=UI.friend={id:fid,loading:true,items:[],q:'',onlyNew:false,view:'sammlung',wish:[],wishErr:''};render();
+  getDocs(collection(db,'profiles',fid,'wish')).then(r=>{F.wish=r.docs.map(d=>d.data())}).catch(e=>{F.wishErr=e.code==='permission-denied'?'Die Wunschliste ist nicht freigegeben.':'Laden fehlgeschlagen ('+(e.code||e.message)+').'}).finally(()=>{if(UI.friend===F)render()});
   try{UI.friend.items=(await getDocs(collection(db,'profiles',fid,'shared'))).docs.map(d=>d.data())}
   catch(e){UI.friend.error=e.code==='permission-denied'?'Diese Sammlung ist aktuell nicht freigegeben.':'Laden fehlgeschlagen ('+(e.code||e.message)+').'}
   UI.friend.loading=false;render();
@@ -1621,11 +1641,37 @@ const iHave=b=>D.bottles.some(x=>(b.barcode&&x.barcode===b.barcode)||x.name.trim
 function rFriendView(v){
   const F=UI.friend,p=FR.profiles[F.id]||{};
   const rated=F.items.filter(b=>b.rating!=null),avg=rated.length?Math.round(rated.reduce((s,b)=>s+b.rating,0)/rated.length):null;
+  const wv=F.view==='wunsch';
   v.innerHTML=`<div class="tools"><button class="btn" id="back">← Zurück</button><h2 class="ptitle" style="flex:1;margin:0">${esc(p.name||'Freund')}</h2></div>
-  ${F.loading?'<p class="muted">Lade Sammlung …</p>':F.error?`<div class="empty">${esc(F.error)}</div>`:`
+  <div class="seg" style="margin-bottom:18px;max-width:360px"><button class="btn ${wv?'':'on'}" data-fv="sammlung">Sammlung</button><button class="btn ${wv?'on':''}" data-fv="wunsch">Wunschliste${F.wish.length?' ('+F.wish.length+')':''}</button></div>
+  ${wv?`<div class="tools"><input id="fq" type="search" placeholder="Wunschliste durchsuchen" value="${esc(F.q)}"><label class="chk"><input type="checkbox" id="fnew" ${F.onlyNew?'checked':''}> nur was ich nicht habe</label><button class="btn" id="flay" aria-label="Ansicht wechseln"></button></div><div id="fgrid"></div>`:F.loading?'<p class="muted">Lade Sammlung …</p>':F.error?`<div class="empty">${esc(F.error)}</div>`:`
   <section class="stats"><div class="stat"><span>Flaschen</span><b>${F.items.length}</b></div><div class="stat"><span>Ø Note</span><b>${avg??'–'}</b></div><div class="stat"><span>Fehlen dir</span><b>${F.items.filter(b=>!iHave(b)).length}</b></div></section>
   <div class="tools"><input id="fq" type="search" placeholder="Sammlung durchsuchen" value="${esc(F.q)}"><label class="chk"><input type="checkbox" id="fnew" ${F.onlyNew?'checked':''}> nur was ich nicht habe</label><button class="btn" id="flay" aria-label="Ansicht wechseln"></button></div><div id="fgrid"></div>`}`;
   $('#back').onclick=()=>{UI.friend=null;render()};
+  $$('[data-fv]',v).forEach(b=>b.onclick=()=>{F.view=b.dataset.fv;render()});
+  const wishFill=()=>{
+    const q=F.q.trim().toLowerCase(),g=$('#fgrid');
+    if(F.wishErr){g.className='';g.innerHTML=`<div class="empty">${esc(F.wishErr)}</div>`;return}
+    const list=F.wish.filter(w=>(!q||[w.name,w.distillery].join(' ').toLowerCase().includes(q))&&(!F.onlyNew||!iHave(w))).sort((a,b)=>((b.prio==='hoch')-(a.prio==='hoch'))||a.name.localeCompare(b.name,'de'));
+    if(!list.length){g.className='';g.innerHTML='<div class="empty">'+(F.wish.length?'Keine Treffer.':'Noch keine Wünsche freigegeben.')+'</div>';return}
+    const tag=w=>[w.prio==='hoch'?'Wunsch hoch':'',iHave(w)?'hast du schon':''].filter(Boolean);
+    if(UI.layout==='liste'){
+      g.className='';
+      g.innerHTML=`<div class="rows">${list.map((w,i)=>`<div class="lrow" tabindex="0" role="button" data-i="${i}"><div class="lmain"><b>${esc(w.name)}</b><span>${esc([w.distillery,...tag(w)].filter(Boolean).join(' · '))}</span></div><div class="lr"></div></div>`).join('')}</div>`;
+      $$('.lrow',g).forEach(c=>{c.onclick=()=>friendWish(list[c.dataset.i],p.name);c.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();c.click()}}});
+      return;
+    }
+    g.className='grid';
+    g.innerHTML=list.map((w,i)=>`<article class="card" data-i="${i}"><div class="pic">${w.image?`<img loading="lazy" src="${esc(w.image)}" alt="">`:PH()}</div><div class="cbody">${w.distillery?`<div class="dist">${esc(w.distillery)}</div>`:''}<h3>${esc(w.name)}</h3><div class="cfoot">${tag(w).map(t=>`<span>${esc(t)}</span>`).join('')||'<span></span>'}</div></div></article>`).join('');
+    $$('.card',g).forEach(c=>c.onclick=()=>friendWish(list[c.dataset.i],p.name));
+  };
+  if(wv){
+    $('#fq').oninput=e=>{F.q=e.target.value;wishFill()};
+    $('#fnew').onchange=e=>{F.onlyNew=e.target.checked;wishFill()};
+    const lb=()=>{$('#flay').textContent=UI.layout==='liste'?'Karten':'Liste'};lb();
+    $('#flay').onclick=()=>{UI.layout=UI.layout==='liste'?'karten':'liste';try{localStorage.setItem('wv-layout',UI.layout)}catch{}lb();wishFill()};
+    wishFill();return;
+  }
   if(F.loading||F.error)return;
   const fill=()=>{
     const q=F.q.trim().toLowerCase();
@@ -1647,6 +1693,11 @@ function rFriendView(v){
   const flayBtn=()=>{$('#flay').textContent=UI.layout==='liste'?'Karten':'Liste'};flayBtn();
   $('#flay').onclick=()=>{UI.layout=UI.layout==='liste'?'karten':'liste';try{localStorage.setItem('wv-layout',UI.layout)}catch{}flayBtn();fill()};
   fill();
+}
+function friendWish(w,owner){
+  const d=modal(`<div class="mhead"><h2>${esc(w.name)}</h2><button class="x" data-close aria-label="Schliessen">✕</button></div>
+  <div class="imgrow"><div class="pic">${w.image?`<img src="${esc(w.image)}" alt="">`:PH('Foto')}</div><div class="stack"><span class="muted">${esc(w.distillery||'')}</span><span>${esc(owner||'Dein Freund')} wünscht sich das${w.prio==='hoch'?' <b style="color:var(--copper2)">besonders</b>':''}.</span>${iHave(w)?'<span class="pill ja">hast du schon</span>':''}</div></div>
+  <div class="box"><label style="margin:0">Preis prüfen</label><div class="links">${priceLinks(w.name,w.barcode,w.distillery)}</div></div>`);
 }
 function friendBottle(b,owner){
   const d=modal(`<div class="mhead"><h2>${esc(b.name)}</h2><button class="x" data-close aria-label="Schliessen">✕</button></div>
