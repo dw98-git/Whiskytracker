@@ -301,8 +301,9 @@ let UI={tab:'sammlung',collView:'liste',layout:(()=>{try{return localStorage.get
 let raf;const sched=()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(render)};
 
 /* ============ Datenzugriff (Firestore) ============ */
+const qty=b=>Math.max(1,Math.round(b.count||1));
 function isOpen(b){return b.opened??((b.fill??100)<100)}
-const PUB=b=>({id:b.id,name:b.name,distillery:b.distillery||'',age:b.age??null,abv:b.abv??null,volume:b.volume??null,barcode:b.barcode||'',image:b.image||'',fill:b.fill??100,rating:b.rating??null,notes:b.notes||'',region:b.region||'',cask:b.cask||'',bottler:b.bottler||'',opened:isOpen(b),added:b.added||Date.now()}); // ohne Preise!
+const PUB=b=>({id:b.id,name:b.name,distillery:b.distillery||'',age:b.age??null,abv:b.abv??null,volume:b.volume??null,barcode:b.barcode||'',image:b.image||'',fill:b.fill??100,rating:b.rating??null,notes:b.notes||'',region:b.region||'',cask:b.cask||'',bottler:b.bottler||'',opened:isOpen(b),count:qty(b),added:b.added||Date.now()}); // ohne Preise!
 const PUBW=w=>({id:w.id,name:w.name,distillery:w.distillery||'',barcode:w.barcode||'',image:w.image||'',prio:w.prio||'normal',added:w.added||Date.now()}); // ohne Zielpreis, Preis und Notiz
 function upsert(kind,o){const a=D[kind],i=a.findIndex(x=>x.id===o.id);if(i>=0)a[i]=o;else a.push(o)}
 function put(kind,o){
@@ -666,6 +667,14 @@ function scanLive(opts={}){
     })().catch(()=>{if(!done)msg('Kamera nicht verfügbar. Erlaube den Kamerazugriff, nutze „Foto“ oder tippe die Nummer ein.')});
   });
 }
+function askDup(own,mode,add=1){
+  return new Promise(res=>{
+    let v=null;
+    const d=modal(`<div class="mhead"><h2>Schon in der Sammlung</h2><button class="x" data-close aria-label="Schliessen">✕</button></div><p style="margin:0">«${esc(own.name)}» hast du bereits${qty(own)>1?' ('+qty(own)+'×)':''}. Was möchtest du tun?</p><div class="row wrap"><button class="btn pri" data-v="plus">Anzahl auf ${qty(own)+add} erhöhen</button>${mode==='scan'?'<button class="btn" data-v="open">Vorhandene öffnen</button>':''}<button class="btn" data-v="new">Als eigene Flasche erfassen</button></div>`);
+    d.addEventListener('click',e=>{const b=e.target.closest('[data-v]');if(b){v=b.dataset.v;d.close()}});
+    d.addEventListener('close',()=>res(v));
+  });
+}
 const ownedBottle=code=>{const k=canonGtin(code);return k&&D.bottles.find(x=>x.barcode&&canonGtin(x.barcode)===k)};
 /* Mehrere Flaschen hintereinander scannen: jede erkannte Flasche wird gleich in die Sammlung gelegt */
 async function multiScan(){
@@ -673,7 +682,7 @@ async function multiScan(){
   const line=h=>{const l=$('#mlist');if(!l)return null;const r=document.createElement('div');r.className='mrow';r.innerHTML=h;l.prepend(r);return r};
   const onCode=async c=>{
     const own=ownedBottle(c);
-    if(own){line(`<span>⚠️ <b>${esc(own.name)}</b> hast du schon</span>`);return}
+    if(own){line(`<span>⚠️ <b>${esc(own.name)}</b> hast du schon${qty(own)>1?' ('+qty(own)+'×)':''}</span><button class="btn" data-plus="${own.id}">+1</button>`);return}
     const r=line(`<span class="muted">${esc(c)} wird gesucht …</span>`);
     try{
       const it=(await codeLookup(c))[0];
@@ -687,7 +696,10 @@ async function multiScan(){
     }catch(e){r&&(r.innerHTML=`<span>⚠️ ${esc(c)}: Suche nicht erreichbar</span>`)}
   };
   const p=scanLive({multi:true,onCode});
-  $('#mlist')?.addEventListener('click',e=>{const b=e.target.closest('[data-fill]');if(!b)return;manual=b.dataset.fill;b.closest('dialog').close()});
+  $('#mlist')?.addEventListener('click',e=>{
+    const pl=e.target.closest('[data-plus]');
+    if(pl){const o=D.bottles.find(x=>x.id===pl.dataset.plus);if(o){const n=qty(o)+1;put('bottles',{...o,count:n});pl.previousElementSibling.innerHTML='✅ <b>'+esc(o.name)+'</b> jetzt ×'+n;pl.remove()}return}
+    const b=e.target.closest('[data-fill]');if(!b)return;manual=b.dataset.fill;b.closest('dialog').close()});
   await p;
   if(added)toast(added===1?'1 Flasche hinzugefügt.':added+' Flaschen hinzugefügt.');
   if(manual)openBottle(null,{barcode:manual});
@@ -771,17 +783,19 @@ async function scanLegacy(opts={}){
     })().catch(()=>{if(!done)$('#reader',d).innerHTML='<p class="err" style="padding:12px">Kamera nicht verfügbar. Erlaube den Kamerazugriff, nutze „Foto vom Barcode“ oder tippe die Nummer ein.</p>'});
   });
 }
-async function lookupInto(el,q,onPick){
+async function lookupInto(el,q,onPick,opt={}){
   q=q.trim();if(!q)return;
   el.innerHTML='<p class="muted sm">Suche läuft …</p>';
   try{
     const isCode=/^\d{8,14}$/.test(q);
-    const items=isCode?await codeLookup(q):await searchAll(q);
+    let items=isCode?await codeLookup(q):await searchAll(q);
+    if(opt.skipSrc)items=items.filter(i=>i.src!==opt.skipSrc);
+    if(!items.length&&opt.quietEmpty){el.innerHTML='<p class="muted sm" style="margin:0">Keine weiteren Treffer online.</p>';return[]}
     if(!items.length){el.innerHTML=isCode?'<div class="note"><b>Dieser Barcode ist noch unbekannt.</b> Er ist im Formular eingetragen. Gib Name und Daten von Hand ein, dann findet ihn die gemeinsame Datenbank beim nächsten Mal.</div>':'<div class="note"><b>Nichts gefunden.</b> Versuche nur die Marke (z. B. „Glen Moray“), scanne den Barcode oder trage die Daten von Hand ein.</div>';return[]}
     el.innerHTML=items.map((it,i)=>`<button class="res" data-i="${i}">${it.thumb?`<img src="${esc(it.thumb)}" alt="">`:'<span class="ph"></span>'}<span><b>${esc(it.name)}</b><small>${esc([it.note||it.distillery,it.abv?it.abv+' %':'',it.volume?it.volume+' ml':'',it.barcode,it.src].filter(Boolean).join(' · '))}</small></span></button>`).join('');
     $$('.res',el).forEach(b=>b.onclick=()=>onPick(items[b.dataset.i]));
     return items;
-  }catch(e){el.innerHTML=`<div class="note bad"><b>Suche nicht erreichbar.</b> ${esc(e.message)}. Prüfe deine Verbindung oder trage die Daten von Hand ein.<div class="row" style="margin-top:8px"><button class="btn" data-retry>Nochmals versuchen</button></div></div>`;$('[data-retry]',el).onclick=()=>lookupInto(el,q,onPick)}
+  }catch(e){el.innerHTML=`<div class="note bad"><b>Suche nicht erreichbar.</b> ${esc(e.message)}. Prüfe deine Verbindung oder trage die Daten von Hand ein.<div class="row" style="margin-top:8px"><button class="btn" data-retry>Nochmals versuchen</button></div></div>`;$('[data-retry]',el).onclick=()=>lookupInto(el,q,onPick,opt)}
 }
 function priceBox(d,{getName,getCode,getBrand,onApply}){
   const refresh=()=>{$('[data-plinks]',d).innerHTML=priceLinks(getName(),getCode(),getBrand?.())};
@@ -863,20 +877,20 @@ function statsHTML(){
   const B=D.bottles;
   if(!B.length)return '<div class="empty"><b>Noch keine Daten</b>Sobald du Flaschen erfasst hast, erscheinen hier Auswertungen.</div>';
   const L=n=>(Math.round(n/100)/10).toLocaleString('de-CH')+' l';
-  const vol=B.reduce((s,b)=>s+(b.volume||0),0),rest=B.reduce((s,b)=>s+(b.volume||0)*(isOpen(b)?(b.fill??100):100)/100,0);
-  const priced=B.filter(b=>b.price!=null),avgP=priced.length?priced.reduce((s,b)=>s+b.price,0)/priced.length:null;
+  const vol=B.reduce((s,b)=>s+(b.volume||0)*qty(b),0),rest=B.reduce((s,b)=>s+(b.volume||0)*((isOpen(b)?(b.fill??100):100)+100*(qty(b)-1))/100,0),total=B.reduce((s,b)=>s+qty(b),0);
+  const priced=B.filter(b=>b.price!=null),avgP=priced.length?priced.reduce((s,b)=>s+b.price*qty(b),0)/priced.reduce((s,b)=>s+qty(b),0):null;
   const open=B.filter(isOpen).length;
   const val=b=>b.market?.price??b.price??0;
-  let h=`<section class="stats"><div class="stat"><span>Inhalt gesamt</span><b>${L(vol)}</b></div><div class="stat"><span>Noch im Regal</span><b>${L(rest)}</b></div><div class="stat"><span>Ø Preis / Flasche</span><b>${money(avgP)}</b></div><div class="stat"><span>Geöffnet / zu</span><b>${open} / ${B.length-open}</b></div></section>`;
-  const dist=groupBy(B,b=>(b.distillery||'').trim()).sort((a,b)=>b.value-a.value).slice(0,8);
+  let h=`<section class="stats"><div class="stat"><span>Inhalt gesamt</span><b>${L(vol)}</b></div><div class="stat"><span>Noch im Regal</span><b>${L(rest)}</b></div><div class="stat"><span>Ø Preis / Flasche</span><b>${money(avgP)}</b></div><div class="stat"><span>Geöffnet / zu</span><b>${open} / ${total-open}</b></div></section>`;
+  const dist=groupBy(B,b=>(b.distillery||'').trim(),qty).sort((a,b)=>b.value-a.value).slice(0,8);
   if(dist.length)h+=`<h3 class="sub">Top Brennereien</h3>${barList(dist,v=>v+(v===1?' Flasche':' Flaschen'))}`;
-  const reg=groupBy(B,b=>(b.region||'').trim()).sort((a,b)=>b.value-a.value).slice(0,8);
-  if(reg.length){const w=groupBy(B,b=>(b.region||'').trim(),val);reg.forEach(r=>r.sub=money(w.find(x=>x.label===r.label).value));h+=`<h3 class="sub">Regionen (Anzahl · Wert)</h3>${barList(reg,v=>v+(v===1?' Flasche':' Flaschen'))}`}
+  const reg=groupBy(B,b=>(b.region||'').trim(),qty).sort((a,b)=>b.value-a.value).slice(0,8);
+  if(reg.length){const w=groupBy(B,b=>(b.region||'').trim(),b=>val(b)*qty(b));reg.forEach(r=>r.sub=money(w.find(x=>x.label===r.label).value));h+=`<h3 class="sub">Regionen (Anzahl · Wert)</h3>${barList(reg,v=>v+(v===1?' Flasche':' Flaschen'))}`}
   else h+=`<h3 class="sub">Regionen</h3><p class="muted sm" style="margin:0">Trage bei den Flaschen die Region ein, dann erscheint hier die Verteilung.</p>`;
   const tags=new Map();D.tastings.forEach(t=>(t.tags||[]).forEach(g=>tags.set(g,(tags.get(g)||0)+1)));
   const tg=[...tags].map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value).slice(0,10);
   if(tg.length)h+=`<h3 class="sub">Geschmacksprofil (aus ${D.tastings.length} Bewertungen)</h3>${barList(tg,v=>v+'×')}`;
-  const yr=groupBy(priced,b=>String((b.bought||'').slice(0,4)||new Date(b.added||Date.now()).getFullYear()),b=>b.price).sort((a,b)=>a.label.localeCompare(b.label));
+  const yr=groupBy(priced,b=>String((b.bought||'').slice(0,4)||new Date(b.added||Date.now()).getFullYear()),b=>b.price*qty(b)).sort((a,b)=>a.label.localeCompare(b.label));
   if(yr.length)h+=`<h3 class="sub">Ausgaben pro Jahr</h3>${barList(yr,v=>money(v))}`;
   const best=B.filter(b=>b.rating!=null).sort((a,b)=>b.rating-a.rating).slice(0,5).map(b=>({label:b.name,value:b.rating}));
   if(best.length)h+=`<h3 class="sub">Beste Bewertungen</h3>${barList(best,v=>v+' Punkte')}`;
@@ -908,7 +922,7 @@ const FILTERS={
   ohnepreis:['Ohne Marktpreis',b=>b.market?.price==null]
 };
 function rColl(v){
-  const n=D.bottles.length,ein=D.bottles.reduce((s,b)=>s+(b.price||0),0),wert=D.bottles.reduce((s,b)=>s+(b.market?.price??b.price??0),0);
+  const n=D.bottles.reduce((s,b)=>s+qty(b),0),ein=D.bottles.reduce((s,b)=>s+(b.price||0)*qty(b),0),wert=D.bottles.reduce((s,b)=>s+(b.market?.price??b.price??0)*qty(b),0);
   const rated=D.bottles.filter(b=>b.rating!=null),avg=rated.length?Math.round(rated.reduce((s,b)=>s+b.rating,0)/rated.length):null;
   const cvSeg=`<div class="seg" style="margin-bottom:22px;max-width:360px"><button class="btn ${UI.collView==='stats'?'':'on'}" data-cv="liste">Flaschen</button><button class="btn ${UI.collView==='stats'?'on':''}" data-cv="stats">Statistik</button></div>`;
   const bindCv=()=>$$('[data-cv]',v).forEach(b=>b.onclick=()=>{UI.collView=b.dataset.cv;render()});
@@ -943,7 +957,7 @@ function fillGrid(){
   if(!list.length){g.className='';g.innerHTML=D.bottles.length?'<div class="empty">Keine Treffer.</div>':'<div class="empty"><b>Noch keine Flaschen</b>Tippe auf „+ Flasche erfassen“ und such deine erste Flasche über Name oder Barcode.</div>';return}
   if(UI.layout==='liste'){
     g.className='';
-    g.innerHTML=`<div class="rows">${list.map(b=>`<div class="lrow" tabindex="0" role="button" data-id="${b.id}"><div class="lmain"><b>${esc(b.name)}</b><span>${esc([b.distillery,meta(b)].filter(Boolean).join(' · '))}</span></div><div class="lr">${b.rating!=null?`<b>${b.rating}</b>`:''}<span>${esc(isOpen(b)?b.fill+' %':'ungeöffnet')}${b.price!=null?' · '+esc(money(b.price)):''}</span></div></div>`).join('')}</div>`;
+    g.innerHTML=`<div class="rows">${list.map(b=>`<div class="lrow" tabindex="0" role="button" data-id="${b.id}"><div class="lmain"><b>${esc(b.name)}</b><span>${esc([b.distillery,meta(b)].filter(Boolean).join(' · '))}</span></div><div class="lr">${b.rating!=null?`<b>${b.rating}</b>`:''}<span>${qty(b)>1?'×'+qty(b)+' · ':''}${esc(isOpen(b)?b.fill+' %':'ungeöffnet')}${b.price!=null?' · '+esc(money(b.price)):''}</span></div></div>`).join('')}</div>`;
     $$('.lrow',g).forEach(c=>c.onclick=()=>openBottle(c.dataset.id));
     return;
   }
@@ -952,7 +966,7 @@ function fillGrid(){
     const d=(b.market?.price!=null&&b.price!=null)?b.market.price-b.price:null;
     return `<article class="card" tabindex="0" role="button" data-id="${b.id}"><div class="pic">${b.image?`<img loading="lazy" src="${esc(b.image)}" alt="">`:PH()}<div class="gauge" title="Füllstand ${b.fill}%"><i style="height:${b.fill}%"></i></div>${b.rating!=null?`<b class="score">${b.rating}</b>`:''}</div>
     <div class="cbody">${b.distillery?`<div class="dist">${esc(b.distillery)}</div>`:''}<h3>${esc(b.name)}</h3><p>${esc(meta(b))}</p>
-    <div class="cfoot"><span>${isOpen(b)?b.fill+' % voll':'ungeöffnet'}</span><span title="Einstand">${money(b.price)}</span></div>
+    <div class="cfoot"><span>${qty(b)>1?'×'+qty(b)+' · ':''}${isOpen(b)?b.fill+' % voll':'ungeöffnet'}</span><span title="Einstand">${money(b.price)}</span></div>
     ${b.market?.price!=null?`<div class="mk">Markt ab <b>${money(b.market.price)}</b>${d!=null&&d!==0?` <span class="${d>0?'up':'down'}">${d>0?'+':'−'}${money(Math.abs(d))}</span>`:''}</div>`:''}</div></article>`}).join('');
   $$('.card',g).forEach(c=>c.onclick=()=>openBottle(c.dataset.id));
 }
@@ -968,6 +982,7 @@ function openBottle(id,pre,opts){
   <div class="g3"><div><label>Alter (Jahre)</label><input name="age" type="number" min="0" value="${b.age??''}"></div><div><label>Alkohol (% vol)</label><input name="abv" type="number" step="0.1" value="${b.abv??''}"></div><div><label>Inhalt (ml)</label><input name="volume" type="number" value="${b.volume??''}"></div></div>
   <div class="g2"><div><label>Region / Land</label><input name="region" list="dl-region" value="${esc(b.region||'')}" placeholder="z. B. Speyside"><datalist id="dl-region">${['Speyside','Islay','Highlands','Lowlands','Campbeltown','Islands','Irland','USA','Japan','Schweiz','Indien','Taiwan','Andere'].map(x=>`<option value="${x}">`).join('')}</datalist></div><div><label>Fassart</label><input name="cask" list="dl-cask" value="${esc(b.cask||'')}" placeholder="z. B. Sherry"><datalist id="dl-cask">${['Bourbon','Sherry','Port','Wein','Rum','Madeira','Mizunara','Mehrere Fässer'].map(x=>`<option value="${x}">`).join('')}</datalist></div></div>
   <div class="g2"><div><label>Abfüller</label><input name="bottler" value="${esc(b.bottler||'')}" placeholder="z. B. Original"></div><div><label>Status</label><select name="opened"><option value="0">Ungeöffnet</option><option value="1">Geöffnet</option></select></div></div>
+  <div class="g2"><div><label>Anzahl Flaschen</label><input name="count" type="number" min="1" step="1" inputmode="numeric" value="${qty(b)}"></div><div><label>&nbsp;</label><span class="muted sm">Dieselbe Flasche mehrfach? Hier die Anzahl eintragen. Füllstand und Status gelten für die angebrochene.</span></div></div>
   <div><label>Füllstand</label><div class="row"><input name="fill" type="range" min="0" max="100" step="5" value="${b.fill}"><span class="range-val" data-fv>${b.fill} %</span></div></div>
   <div class="g2"><div><label>Einstandspreis (privat)</label><input name="price" type="number" step="0.05" min="0" inputmode="decimal" value="${b.price??''}"></div><div><label>Note (0–100)</label><input name="rating" type="number" min="0" max="100" inputmode="numeric" value="${b.rating??''}" placeholder="–"></div></div>
   <div class="g2"><div><label>Kaufdatum (privat)</label><input name="bought" type="date" value="${esc(b.bought||'')}"></div><div><label>Gekauft bei (privat)</label><input name="shop" value="${esc(b.shop||'')}" placeholder="z. B. Händler, Ort"></div></div>
@@ -1000,7 +1015,7 @@ function openBottle(id,pre,opts){
   d.addEventListener('click',async e=>{
     const a=e.target.closest('[data-a]')?.dataset.a;if(!a)return;
     if(a==='search')search();
-    if(a==='scan'){const c=await scanBarcode();if(c){const own=isNew&&ownedBottle(c);if(own&&confirm(`«${own.name}» ist schon in deiner Sammlung. Diese Flasche öffnen?\n(Abbrechen = trotzdem als neue Flasche erfassen)`)){d.close();openBottle(own.id);return}f('q').value=c;search()}}
+    if(a==='scan'){const c=await scanBarcode();if(c){const own=isNew&&ownedBottle(c);if(own){const v=await askDup(own,'scan');if(v==='plus'){const n=qty(own)+1;put('bottles',{...own,count:n});toast('Anzahl erhöht: '+own.name+' ×'+n);d.close();return}if(v==='open'){d.close();openBottle(own.id);return}if(v!=='new')return}f('q').value=c;search()}}
     if(a==='photo')$('[data-file]',d).click();
     if(a==='rmimg'){img='';src0='';pic()}
     if(a==='crop'&&img){const o=await editImage(src0||img);if(o){img=o;pic()}}
@@ -1008,8 +1023,8 @@ function openBottle(id,pre,opts){
     if(a==='save'){
       const name=f('name').value.trim();if(!name){f('name').focus();return}
       const mp=num(f('mprice').value);
-      Object.assign(b,{name,distillery:f('distillery').value.trim(),barcode:f('barcode').value.trim(),age:num(f('age').value),abv:num(f('abv').value),volume:num(f('volume').value),fill:Number(f('fill').value),price:num(f('price').value),rating:num(f('rating').value),notes:f('notes').value.trim(),image:img,region:f('region').value.trim(),cask:f('cask').value.trim(),bottler:f('bottler').value.trim(),bought:f('bought').value,shop:f('shop').value.trim(),opened:f('opened').value==='1'});
-      if(isNew){const dup=D.bottles.find(x=>(b.barcode&&x.barcode===b.barcode)||x.name.trim().toLowerCase()===name.toLowerCase());if(dup&&!confirm(`«${dup.name}» ist schon in deiner Sammlung. Trotzdem als weitere Flasche speichern?`))return}
+      Object.assign(b,{name,distillery:f('distillery').value.trim(),barcode:f('barcode').value.trim(),age:num(f('age').value),abv:num(f('abv').value),volume:num(f('volume').value),fill:Number(f('fill').value),price:num(f('price').value),rating:num(f('rating').value),notes:f('notes').value.trim(),image:img,region:f('region').value.trim(),cask:f('cask').value.trim(),bottler:f('bottler').value.trim(),bought:f('bought').value,shop:f('shop').value.trim(),opened:f('opened').value==='1',count:Math.max(1,Math.round(num(f('count').value)||1))});
+      if(isNew){const dup=D.bottles.find(x=>(b.barcode&&canonGtin(x.barcode)===canonGtin(b.barcode))||x.name.trim().toLowerCase()===name.toLowerCase());if(dup){const v=await askDup(dup,'save',qty(b));if(v==='plus'){const n=qty(dup)+qty(b);put('bottles',{...dup,count:n});toast('Anzahl erhöht: '+dup.name+' ×'+n);d.close();opts?.onSaved?.();return}if(v!=='new')return}}
       if(mp==null)b.market=null;else if(b.market?.price!==mp)b.market={price:mp,date:today(),source:'manuell'};
       put('bottles',b);d.close();opts?.onSaved?.();
     }
@@ -1018,8 +1033,13 @@ function openBottle(id,pre,opts){
 }
 
 /* ============ Version und Änderungsprotokoll ============ */
-const APP_VERSION='1.12.0';
+const APP_VERSION='1.13.0';
 const CHANGELOG=[
+  {v:'1.13.0',d:'2026-10-13',t:[
+    'Wunschliste von Freunden: Du kannst einen Wunsch als «reserviert» markieren, damit niemand doppelt schenkt. Andere Freunde sehen die Reservierung, die beschenkte Person nicht.',
+    'Neu: Anzahl Flaschen. Hast du denselben Whisky mehrmals, trägst du die Anzahl ein statt ihn doppelt zu erfassen. Beim Scannen oder Speichern einer schon vorhandenen Flasche fragt die App, ob die Anzahl erhöht werden soll. Statistik und Werte rechnen die Anzahl mit.',
+    'Degustation: Die Suche zeigt jetzt getrennt «Meine Sammlung», die gemeinsame Whisky-Vault-Datenbank und Online-Treffer. Mit «Aus Sammlung» wählst du eine Flasche ohne Tippen.',
+  ]},
   {v:'1.12.0',d:'2026-10-12',t:[
     'Neu: Wunschliste für Freunde. Wer will, gibt die eigene Wunschliste frei (Freunde → Dein Profil). Freunde sehen sie unter ihrem Namen auf dem neuen Reiter «Wunschliste», praktisch für Geschenke. Zielpreis, Preise und Notizen bleiben privat.',
   ]},
@@ -1421,7 +1441,7 @@ function rTast(v){
   if(cur)loadBD();
   let html=`<h2 class="ptitle">Degustationen</h2>${inviteBanners()}<div class="tools"><select id="ses" ${ses.length?'':'disabled'} style="flex:1 1 200px">${ses.map(s=>`<option value="${s.id}" ${s.id===UI.sessionId?'selected':''}>${esc(s.name)} – ${fmtDate(s.date)}</option>`).join('')||'<option>Noch keine Degustation</option>'}</select><button class="btn pri" id="newses">+ Neue Degustation</button>${cur?'<button class="btn ghost danger" id="delses">Löschen</button>':''}</div><div class="tools" style="margin-top:-8px">${cur?'<button class="btn" id="sheet">Liste scannen</button><button class="btn" id="share">Teilen</button>':''}<button class="btn" id="join">Beitreten</button></div>${cur?.groupId?`<p class="muted sm" style="margin:-8px 0 16px">${cur.host?'Du teilst diese Degustation.':'Gemeinsam mit '+esc(cur.hostName||'einem Freund')+'.'}</p>`:''}`;
   if(!cur){v.innerHTML=html+'<div class="empty"><b>Starte eine Degustation</b>Lege einen Abend an, such die Whiskys per Name oder Barcode und bewerte jeden. Am Ende siehst du, was dir geschmeckt hat.</div>';bindSes();return}
-  html+=`<div class="box" style="margin-bottom:16px"><label style="margin:0">Whisky zur Degustation hinzufügen</label><div class="row"><input id="tq" placeholder="Name oder Barcode (Sammlung & online)"><button class="btn" id="tgo">Suchen</button><button class="btn" id="tscan" title="Barcode scannen">Scannen</button></div><div class="results" id="tres"></div></div>`;
+  html+=`<div class="box" style="margin-bottom:16px"><label style="margin:0">Whisky zur Degustation hinzufügen</label><div class="row"><input id="tq" placeholder="Name oder Barcode (Sammlung, Datenbank, online)"><button class="btn" id="tgo">Suchen</button><button class="btn" id="tscan" title="Barcode scannen">Scannen</button><button class="btn" id="tcoll">Aus Sammlung</button></div><div class="results" id="tres"></div></div>`;
   const ts=D.tastings.filter(t=>t.sessionId===cur.id).sort((a,b)=>(b.score??-1)-(a.score??-1)||a.created-b.created);
   if(!ts.length)html+='<div class="empty"><b>Noch nichts im Glas</b>Such oben deinen ersten Whisky.</div>';
   else{
@@ -1432,6 +1452,7 @@ function rTast(v){
   $$('.item',v).forEach(it=>it.onclick=()=>openTasting(it.dataset.id));
   const go=async(q)=>{q=q.trim();if(!q)return;await tastingSearch(q,$('#tres'))};
   $('#tgo').onclick=()=>go($('#tq').value);
+  $('#tcoll').onclick=()=>tastingSearch('',$('#tres'));
   $('#tq').onkeydown=e=>{if(e.key==='Enter')go(e.target.value)};
   $('#tscan').onclick=async()=>{const c=await scanBarcode();if(c){$('#tq').value=c;go(c)}};
 }
@@ -1451,14 +1472,30 @@ function bindSes(){
   const sel=$('#ses');if(sel&&!sel.disabled)sel.onchange=e=>{UI.sessionId=e.target.value;render()};
   const dl=$('#delses');if(dl)dl.onclick=()=>{if(confirm('Diese Degustation samt Bewertungen löschen?')){const sid=UI.sessionId,s0=D.sessions.find(x=>x.id===sid);D.tastings.filter(t=>t.sessionId===sid).forEach(t=>del('tastings',t.id));del('sessions',sid);UI.sessionId=null;if(s0?.groupId&&s0.host)stopSharing(s0,true)}};
 }
+async function dbSearch(q){
+  if(/^\d{8,14}$/.test(q)){
+    const r=await Promise.all(barcodeVariants(q).map(c=>catByCode(c).catch(()=>null)));
+    return dedupe(r.filter(Boolean));
+  }
+  const vs=queryVariants(q.replace(/[()"\[\]{}:]/g,' ').replace(/\s+/g,' ').trim());
+  const v1=vs[Math.min(1,vs.length-1)];
+  const rs=await Promise.allSettled([catSearch(vs[0]),v1!==vs[0]?catSearch(v1):Promise.resolve([])]);
+  return rankItems(dedupe(rs.flatMap(r=>r.value||[])),q);
+}
 async function tastingSearch(q,el){
   const ql=q.toLowerCase();
-  const own=D.bottles.filter(b=>[b.name,b.distillery,b.barcode].join(' ').toLowerCase().includes(ql));
-  const ownHtml=own.map(b=>`<button class="res" data-own="${b.id}">${b.image?`<img src="${esc(b.image)}" alt="">`:'<span class="ph"></span>'}<span><b>${esc(b.name)}</b><small>Aus meiner Sammlung${b.barcode?' · '+esc(b.barcode):''}</small></span></button>`).join('');
-  el.innerHTML=(ownHtml?`<label>Meine Sammlung</label>${ownHtml}`:'')+`<label>Online</label><div id="onl"></div><button class="res" data-manual><span class="ph">+</span><span><b>Von Hand hinzufügen: „${esc(q)}“</b><small>Falls online nichts passt</small></span></button>`;
+  const own=D.bottles.filter(b=>!ql||[b.name,b.distillery,b.barcode].join(' ').toLowerCase().includes(ql)).sort((a,b)=>a.name.localeCompare(b.name,'de')).slice(0,ql?20:60);
+  const ownHtml=own.map(b=>`<button class="res" data-own="${b.id}">${b.image?`<img src="${esc(b.image)}" alt="">`:'<span class="ph"></span>'}<span><b>${esc(b.name)}</b><small>Aus meiner Sammlung${qty(b)>1?' · ×'+qty(b):''}${b.barcode?' · '+esc(b.barcode):''}</small></span></button>`).join('');
+  if(!q){el.innerHTML=ownHtml?`<label>Meine Sammlung (${own.length}${D.bottles.length>own.length?' von '+D.bottles.length:''})</label>${ownHtml}`:'<p class="muted sm">Deine Sammlung ist noch leer.</p>';$$('[data-own]',el).forEach(b=>b.onclick=()=>{const x=D.bottles.find(y=>y.id===b.dataset.own);addTasting(x,x.id)});return}
+  el.innerHTML=(ownHtml?`<label>Meine Sammlung</label>${ownHtml}`:'')+`<label>Whisky-Vault-Datenbank</label><div id="dbr"><p class="muted sm" style="margin:0">Suche läuft …</p></div><label>Online</label><div id="onl"></div><button class="res" data-manual><span class="ph">+</span><span><b>Von Hand hinzufügen: „${esc(q)}“</b><small>Falls nichts passt</small></span></button>`;
   $$('[data-own]',el).forEach(b=>b.onclick=()=>{const x=D.bottles.find(y=>y.id===b.dataset.own);addTasting(x,x.id)});
   $('[data-manual]',el).onclick=()=>addTasting({name:/^\d{8,14}$/.test(q)?'':q,barcode:/^\d{8,14}$/.test(q)?q:''},null);
-  await lookupInto($('#onl',el),q,async it=>{it.image=await cacheImage(it.image);addTasting(it,null)});
+  let db=[];
+  try{db=await dbSearch(q)}catch(e){console.warn('Datenbank',e)}
+  const box=$('#dbr',el);if(!box)return;
+  box.innerHTML=db.length?db.map((it,i)=>`<button class="res" data-db="${i}">${it.thumb?`<img src="${esc(it.thumb)}" alt="">`:'<span class="ph"></span>'}<span><b>${esc(it.name)}</b><small>${esc([it.distillery,it.abv?it.abv+' %':'',it.volume?it.volume+' ml':'',it.barcode].filter(Boolean).join(' · '))}</small></span></button>`).join(''):'<p class="muted sm" style="margin:0">Nichts in der gemeinsamen Datenbank.</p>';
+  $$('[data-db]',box).forEach(b=>b.onclick=()=>addTasting(db[b.dataset.db],null));
+  await lookupInto($('#onl',el),q,async it=>{it.image=await cacheImage(it.image);addTasting(it,null)},{skipSrc:'Whisky Vault',quietEmpty:db.length>0});
 }
 function addTasting(w,bottleId){
   const ex=D.tastings.find(t=>t.sessionId===UI.sessionId&&((bottleId&&t.bottleId===bottleId)||(w.barcode&&t.whisky.barcode===w.barcode)||(!w.barcode&&!bottleId&&w.name&&t.whisky.name.toLowerCase()===w.name.toLowerCase())));
@@ -1631,7 +1668,8 @@ async function acceptReq(r){
   try{await setDoc(doc(db,'friends',members.join('_')),{members,by:ME.uid,created:Date.now()});await deleteDoc(doc(db,'requests',r.id));toast('Ihr seid jetzt befreundet')}catch(e){fail(e)}
 }
 async function openFriend(fid){
-  const F=UI.friend={id:fid,loading:true,items:[],q:'',onlyNew:false,view:'sammlung',wish:[],wishErr:''};render();
+  const F=UI.friend={id:fid,loading:true,items:[],q:'',onlyNew:false,view:'sammlung',wish:[],wishErr:'',res:{},resOk:false};render();
+  getDocs(collection(db,'profiles',fid,'wishres')).then(r=>{F.res=Object.fromEntries(r.docs.map(d=>[d.id,d.data()]));F.resOk=true}).catch(()=>{F.resOk=false}).finally(()=>{if(UI.friend===F)render()});
   getDocs(collection(db,'profiles',fid,'wish')).then(r=>{F.wish=r.docs.map(d=>d.data())}).catch(e=>{F.wishErr=e.code==='permission-denied'?'Die Wunschliste ist nicht freigegeben.':'Laden fehlgeschlagen ('+(e.code||e.message)+').'}).finally(()=>{if(UI.friend===F)render()});
   try{UI.friend.items=(await getDocs(collection(db,'profiles',fid,'shared'))).docs.map(d=>d.data())}
   catch(e){UI.friend.error=e.code==='permission-denied'?'Diese Sammlung ist aktuell nicht freigegeben.':'Laden fehlgeschlagen ('+(e.code||e.message)+').'}
@@ -1654,16 +1692,16 @@ function rFriendView(v){
     if(F.wishErr){g.className='';g.innerHTML=`<div class="empty">${esc(F.wishErr)}</div>`;return}
     const list=F.wish.filter(w=>(!q||[w.name,w.distillery].join(' ').toLowerCase().includes(q))&&(!F.onlyNew||!iHave(w))).sort((a,b)=>((b.prio==='hoch')-(a.prio==='hoch'))||a.name.localeCompare(b.name,'de'));
     if(!list.length){g.className='';g.innerHTML='<div class="empty">'+(F.wish.length?'Keine Treffer.':'Noch keine Wünsche freigegeben.')+'</div>';return}
-    const tag=w=>[w.prio==='hoch'?'Wunsch hoch':'',iHave(w)?'hast du schon':''].filter(Boolean);
+    const tag=w=>[w.prio==='hoch'?'Wunsch hoch':'',F.res[w.id]?(F.res[w.id].by===ME.uid?'von dir reserviert':'reserviert'):'',iHave(w)?'hast du schon':''].filter(Boolean);
     if(UI.layout==='liste'){
       g.className='';
       g.innerHTML=`<div class="rows">${list.map((w,i)=>`<div class="lrow" tabindex="0" role="button" data-i="${i}"><div class="lmain"><b>${esc(w.name)}</b><span>${esc([w.distillery,...tag(w)].filter(Boolean).join(' · '))}</span></div><div class="lr"></div></div>`).join('')}</div>`;
-      $$('.lrow',g).forEach(c=>{c.onclick=()=>friendWish(list[c.dataset.i],p.name);c.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();c.click()}}});
+      $$('.lrow',g).forEach(c=>{c.onclick=()=>friendWish(list[c.dataset.i],p.name,F);c.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();c.click()}}});
       return;
     }
     g.className='grid';
     g.innerHTML=list.map((w,i)=>`<article class="card" data-i="${i}"><div class="pic">${w.image?`<img loading="lazy" src="${esc(w.image)}" alt="">`:PH()}</div><div class="cbody">${w.distillery?`<div class="dist">${esc(w.distillery)}</div>`:''}<h3>${esc(w.name)}</h3><div class="cfoot">${tag(w).map(t=>`<span>${esc(t)}</span>`).join('')||'<span></span>'}</div></div></article>`).join('');
-    $$('.card',g).forEach(c=>c.onclick=()=>friendWish(list[c.dataset.i],p.name));
+    $$('.card',g).forEach(c=>c.onclick=()=>friendWish(list[c.dataset.i],p.name,F));
   };
   if(wv){
     $('#fq').oninput=e=>{F.q=e.target.value;wishFill()};
@@ -1694,10 +1732,20 @@ function rFriendView(v){
   $('#flay').onclick=()=>{UI.layout=UI.layout==='liste'?'karten':'liste';try{localStorage.setItem('wv-layout',UI.layout)}catch{}flayBtn();fill()};
   fill();
 }
-function friendWish(w,owner){
+function friendWish(w,owner,F){
+  const r=F?.resOk?F.res[w.id]:null,mine=r&&r.by===ME.uid;
+  const resBox=!F?.resOk||iHave(w)&&!r?'':r?`<div class="box"><b>${mine?'Von dir reserviert':'Schon reserviert'}</b>${mine?'':` <span class="muted sm">von ${esc(r.byName||'einem Freund')}</span>`}<p class="sm muted" style="margin:6px 0 0">${mine?'Dein Freund sieht das nicht.':'So schenkt ihr nicht doppelt.'}</p>${mine?'<div class="row" style="margin-top:8px"><button class="btn" data-unres>Reservierung aufheben</button></div>':''}</div>`:`<div class="box"><b>Du willst das schenken?</b><p class="sm muted" style="margin:6px 0 8px">Reserviere den Wunsch, dann sehen andere Freunde, dass er vergeben ist. ${esc(owner||'Dein Freund')} sieht das nicht.</p><button class="btn pri" data-res>Reservieren</button></div>`;
   const d=modal(`<div class="mhead"><h2>${esc(w.name)}</h2><button class="x" data-close aria-label="Schliessen">✕</button></div>
   <div class="imgrow"><div class="pic">${w.image?`<img src="${esc(w.image)}" alt="">`:PH('Foto')}</div><div class="stack"><span class="muted">${esc(w.distillery||'')}</span><span>${esc(owner||'Dein Freund')} wünscht sich das${w.prio==='hoch'?' <b style="color:var(--copper2)">besonders</b>':''}.</span>${iHave(w)?'<span class="pill ja">hast du schon</span>':''}</div></div>
+  ${resBox}
   <div class="box"><label style="margin:0">Preis prüfen</label><div class="links">${priceLinks(w.name,w.barcode,w.distillery)}</div></div>`);
+  $('[data-res]',d)?.addEventListener('click',async()=>{
+    const rec={by:ME.uid,byName:PROFILE?.name||'',ts:Date.now()};
+    try{await setDoc(doc(db,'profiles',UI.friend.id,'wishres',w.id),rec);F.res[w.id]=rec;d.close();render();toast('Reserviert')}catch(e){toast(e.code==='permission-denied'?'Schon reserviert oder nicht erlaubt.':'Reservieren fehlgeschlagen.')}
+  });
+  $('[data-unres]',d)?.addEventListener('click',async()=>{
+    try{await deleteDoc(doc(db,'profiles',UI.friend.id,'wishres',w.id));delete F.res[w.id];d.close();render();toast('Reservierung aufgehoben')}catch(e){fail(e)}
+  });
 }
 function friendBottle(b,owner){
   const d=modal(`<div class="mhead"><h2>${esc(b.name)}</h2><button class="x" data-close aria-label="Schliessen">✕</button></div>
